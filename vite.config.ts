@@ -219,7 +219,7 @@ const plugins = [
 ];
 
 export default defineConfig({
-  base: "/teatro-teleprompter/",
+  base: "/autocompadecida/",
   plugins,
   resolve: {
     alias: {

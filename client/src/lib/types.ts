@@ -1,0 +1,51 @@
+export type ScriptLine = {
+  id: string;
+  text: string;
+  effectName: string;
+  audioName?: string;
+  audioBlob?: Blob;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type PersistedState = {
+  version: 1;
+  threshold: number;
+  lines: ScriptLine[];
+};
+
+export type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  onresult: ((event: any) => void) | null;
+  onerror: ((event: any) => void) | null;
+  onend: (() => void) | null;
+};
+
+export type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+export const DEFAULT_TRIGGER = "E ande logo antes que mudem de ideia!";
+
+export const makeId = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `fala-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+};
+
+export const now = () => Date.now();
+
+export const defaultLines = (): ScriptLine[] => [
+  {
+    id: makeId(),
+    text: DEFAULT_TRIGGER,
+    effectName: "Risada",
+    audioName: "Risada sintética automática",
+    createdAt: now(),
+    updatedAt: now(),
+  },
+];

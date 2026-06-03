@@ -532,7 +532,38 @@ function App() {
       }
     };
 
+    let retryCount = 0;
+    const MAX_RETRIES = 5;
+
     recognition.onerror = (event: any) => {
+      if (event.error === "aborted" || event.error === "no-speech") return;
+      if (manualStopRef.current) return;
+
+      if (event.error === "network") {
+        retryCount += 1;
+        if (retryCount <= MAX_RETRIES) {
+          const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 8000);
+          setStatus(`Conexão do microfone instável. Tentando novamente em ${delay / 1000}s... (${retryCount}/${MAX_RETRIES})`);
+          setIsListening(false);
+          setTimeout(() => {
+            if (!manualStopRef.current) {
+              try {
+                recognition.abort();
+              } catch { /* ignorar */ }
+              try {
+                recognition.start();
+                setIsListening(true);
+                setStatus("Microfone ligado. Fale uma frase cadastrada para disparar o efeito sonoro.");
+              } catch { /* ignorar */ }
+            }
+          }, delay);
+          return;
+        }
+        setError("Reconhecimento de voz indisponível após várias tentativas. Verifique sua conexão e recarregue a página.");
+        setIsListening(false);
+        return;
+      }
+
       setError(`Erro no microfone/reconhecimento: ${event.error ?? "desconhecido"}.`);
       setIsListening(false);
     };

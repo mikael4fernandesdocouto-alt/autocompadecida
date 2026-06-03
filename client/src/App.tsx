@@ -200,7 +200,19 @@ function playFallbackBeep() {
 }
 
 function App() {
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, logout, loading } = useAuth();
+
+  // Enquanto carrega a autenticação, mostra tela de loading
+  if (loading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#070707]">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
+          <p className="mt-4 text-sm text-zinc-400">Carregando...</p>
+        </div>
+      </main>
+    );
+  }
 
   // Se não está logado, mostra a tela de login
   if (!user) return <LoginPage />;

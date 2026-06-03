@@ -1,7 +1,28 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 
 type Mode = "login" | "register";
+
+const RECENT_USERS_KEY = "teatro-recent-users";
+
+function getRecentUsers(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(RECENT_USERS_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function addRecentUser(username: string) {
+  const users = getRecentUsers().filter((u) => u !== username);
+  users.unshift(username);
+  localStorage.setItem(RECENT_USERS_KEY, JSON.stringify(users.slice(0, 5)));
+}
+
+function removeRecentUser(username: string) {
+  const users = getRecentUsers().filter((u) => u !== username);
+  localStorage.setItem(RECENT_USERS_KEY, JSON.stringify(users));
+}
 
 export function LoginPage() {
   const { login, register } = useAuth();
@@ -11,6 +32,12 @@ export function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recentUsers, setRecentUsers] = useState<string[]>(getRecentUsers);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setRecentUsers(getRecentUsers());
+  }, []);
 
   const handleSubmit = async () => {
     setError("");
@@ -27,6 +54,7 @@ export function LoginPage() {
       if (mode === "login") {
         const err = await login(username.trim(), password);
         if (err) setError(err);
+        else addRecentUser(username.trim());
       } else {
         const err = await register(username.trim(), password);
         if (err) setError(err);
@@ -40,6 +68,19 @@ export function LoginPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const selectRecentUser = (name: string) => {
+    setUsername(name);
+    setPassword("");
+    setError("");
+    setTimeout(() => passwordRef.current?.focus(), 100);
+  };
+
+  const handleRemoveRecent = (e: React.MouseEvent, name: string) => {
+    e.stopPropagation();
+    removeRecentUser(name);
+    setRecentUsers(getRecentUsers());
   };
 
   return (
@@ -58,6 +99,31 @@ export function LoginPage() {
           </p>
         )}
 
+        {/* Contas recentes para login rápido */}
+        {mode === "login" && recentUsers.length > 0 && (
+          <div className="mb-4">
+            <p className="mb-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500">Contas recentes</p>
+            <div className="space-y-1">
+              {recentUsers.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => selectRecentUser(name)}
+                  className="group flex w-full items-center justify-between rounded-xl border border-zinc-800 bg-black/50 px-3 py-2 text-left text-sm text-zinc-300 transition hover:border-emerald-400 hover:text-emerald-300"
+                >
+                  <span>{name}</span>
+                  <span
+                    onClick={(e) => handleRemoveRecent(e, name)}
+                    className="ml-2 rounded px-1.5 py-0.5 text-[10px] text-zinc-600 opacity-0 transition hover:text-red-400 group-hover:opacity-100"
+                    title="Remover"
+                  >
+                    X
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="space-y-3">
           <div>
             <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Usuário</label>
@@ -73,6 +139,7 @@ export function LoginPage() {
           <div>
             <label className="text-xs uppercase tracking-[0.2em] text-zinc-500">Senha</label>
             <input
+              ref={passwordRef}
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

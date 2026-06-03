@@ -1,6 +1,9 @@
 // Imports do React e dos tipos/constantes compartilhadas
 import { useEffect, useMemo, useRef, useState } from "react";
 import { WS_EVENTS, getWsUrl, type WsMessage } from "@shared/const";
+import { useAuth } from "./contexts/AuthContext";
+import { LoginPage } from "./pages/LoginPage";
+import { saveAppState, loadAppState, savePreset, getPresets, deletePreset, type Preset } from "./lib/db";
 
 // Tipo que representa uma fala do roteiro
 type ScriptLine = {
@@ -43,12 +46,6 @@ declare global {
   }
 }
 
-// Configuração do banco IndexedDB para salvar o roteiro no navegador
-const DB_NAME = "teatro-teleprompter-db";
-const DB_VERSION = 1;
-const STORE_NAME = "app";
-const STATE_KEY = "state";
-
 // Frase padrão que dispara a risada sintética automática
 const DEFAULT_TRIGGER = "E ande logo antes que mudem de ideia!";
 
@@ -73,53 +70,6 @@ const defaultLines = (): ScriptLine[] => [
     updatedAt: now(),
   },
 ];
-
-// Abre conexão com o banco IndexedDB (cria o store se não existir)
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-// Carrega o estado salvo (linhas + threshold) do IndexedDB
-async function loadState(): Promise<PersistedState | null> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, "readonly");
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(STATE_KEY);
-
-    request.onsuccess = () => resolve((request.result as PersistedState | undefined) ?? null);
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => db.close();
-  });
-}
-
-// Salva o estado atual (linhas + threshold) no IndexedDB
-async function saveState(state: PersistedState): Promise<void> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(STORE_NAME, "readwrite");
-    const store = transaction.objectStore(STORE_NAME);
-    const request = store.put(state, STATE_KEY);
-
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-  });
-}
 
 // Normaliza texto: remove acentos, converte pra minúsculas, remove pontuação
 const normalizeText = (value: string) =>
@@ -250,6 +200,11 @@ function playFallbackBeep() {
 }
 
 function App() {
+  const { user, isAdmin, logout } = useAuth();
+
+  // Se não está logado, mostra a tela de login
+  if (!user) return <LoginPage />;
+
   // === Estados do roteiro e reconhecimento de voz ===
   const [lines, setLines] = useState<ScriptLine[]>(defaultLines);
   const [selectedLineId, setSelectedLineId] = useState<string>("");
@@ -261,11 +216,13 @@ function App() {
   const [lastMatch, setLastMatch] = useState<{ line: ScriptLine; score: number } | null>(null);
   const [error, setError] = useState("");
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [showPresets, setShowPresets] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const [muted, setMuted] = useState(false);
 
   // === Estados de admin e WebSocket ===
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [showAdminLogin, setShowAdminLogin] = useState(false);
-  const [adminPassword, setAdminPassword] = useState("");
+  const [isAdminLogin, setIsAdminLogin] = useState(isAdmin);
   const [isPttHolding, setIsPttHolding] = useState(false); // se o PTT está ativo
   const [isTokenBusy, setIsTokenBusy] = useState(false); // se outro cliente tem o token
   const [wsStatus, setWsStatus] = useState("desconectado"); // status da conexão WebSocket
@@ -322,8 +279,8 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    loadState()
-      .then((stored) => {
+    loadAppState(user.username)
+      .then((stored: any) => {
         if (cancelled) return;
         if (stored?.lines?.length) {
           setLines(stored.lines);
@@ -348,7 +305,10 @@ function App() {
           try {
             const saved = JSON.parse(localStorage.getItem("teatro-soundEnabled") ?? "true");
             if (typeof saved === "boolean") setSoundEnabled(saved);
+            const mutedSaved = localStorage.getItem("teatro-muted");
+            if (mutedSaved === "true") setMuted(true);
           } catch {}
+          getPresets(user.username).then(setPresets).catch(() => {});
           setIsLoaded(true);
         }
       });
@@ -356,26 +316,30 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [user.username]);
 
   // Auto-save: salva no IndexedDB após 350ms de inatividade (debounce)
   useEffect(() => {
     if (!isLoaded) return;
 
     const timer = window.setTimeout(() => {
-      saveState({ version: 1, threshold, lines })
+      saveAppState(user.username, { version: 1, threshold, lines })
         .then(() => setStatus("Tudo salvo automaticamente neste navegador."))
         .catch(() => setError("Falha ao salvar. Tente usar arquivos menores ou liberar espaço do navegador."));
     }, 350);
 
     return () => window.clearTimeout(timer);
-  }, [isLoaded, lines, threshold]);
+  }, [isLoaded, lines, threshold, user.username]);
 
   // Salva preferência de som no localStorage
   useEffect(() => {
     if (!isLoaded) return;
-    try { localStorage.setItem("teatro-soundEnabled", JSON.stringify(soundEnabled)); } catch {}
-  }, [isLoaded, soundEnabled]);
+    try {
+      localStorage.setItem("teatro-soundEnabled", JSON.stringify(soundEnabled));
+      if (muted) localStorage.setItem("teatro-muted", "true");
+      else localStorage.removeItem("teatro-muted");
+    } catch {}
+  }, [isLoaded, soundEnabled, muted]);
 
   // Conexão WebSocket com reconexão automática (backoff exponencial)
   useEffect(() => {
@@ -522,24 +486,53 @@ function App() {
     wsRef.current.send(JSON.stringify({ type: WS_EVENTS.KILL_AUDIO }));
   };
 
-  // Login de administrador (para acessar o PTT)
-  const handleAdminLogin = async () => {
-    try {
-      const res = await fetch("/api/admin/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: adminPassword }),
-      });
-      if (res.ok) {
-        setIsAdmin(true);
-        setShowAdminLogin(false);
-        setAdminPassword("");
-        setStatus("Autenticado como administrador.");
-      } else {
-        setError("Senha de administrador incorreta.");
-      }
-    } catch {
-      setError("Erro ao conectar com o servidor para autenticação.");
+  // Salva preset atual como predefinição
+  const saveCurrentAsPreset = async () => {
+    if (!presetName.trim() || !selectedLine) return;
+    const preset: Preset = {
+      id: makeId(),
+      username: user.username,
+      name: presetName.trim(),
+      type: "audio",
+      effectName: selectedLine.effectName,
+      audioBlob: selectedLine.audioBlob,
+      audioName: selectedLine.audioName,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    await savePreset(preset);
+    setPresets((p) => [preset, ...p]);
+    setPresetName("");
+    setStatus(`Preset "${preset.name}" salvo.`);
+  };
+
+  // Carrega um preset na fala selecionada
+  const loadPreset = (preset: Preset) => {
+    if (!selectedLine) return;
+    updateSelectedLine({
+      effectName: preset.effectName,
+      audioBlob: preset.audioBlob,
+      audioName: preset.audioName,
+    });
+    setStatus(`Preset "${preset.name}" carregado.`);
+  };
+
+  // Apaga um preset
+  const removePreset = async (id: string) => {
+    await deletePreset(id);
+    setPresets((p) => p.filter((pr) => pr.id !== id));
+  };
+
+  // Mute global do admin: silencia todos os áudios
+  const toggleMute = () => {
+    if (muted) {
+      setMuted(false);
+      setStatus("Áudio reativado.");
+    } else {
+      setMuted(true);
+      stopAllAudio();
+      triggerKillSwitch();
+      setStatus("MUTE ATIVADO: todo áudio foi silenciado em todos os sites.");
     }
   };
 
@@ -596,7 +589,7 @@ function App() {
 
   // Toca o efeito sonoro de uma fala, parando qualquer áudio anterior primeiro
   const playEffect = (line: ScriptLine) => {
-    if (!soundEnabled) return;
+    if (!soundEnabled || muted) return;
     stopAllAudio(); // Garante que só UM áudio toque por vez
 
     if (line.audioBlob) {
@@ -631,7 +624,7 @@ function App() {
 
   // Compara o que foi falado com as falas cadastradas e dispara o efeito se bater
   const checkTranscript = (spoken: string) => {
-    if (!soundEnabled) return;
+    if (!soundEnabled || muted) return;
     if (!spoken || spoken === lastTranscriptRef.current) return;
     lastTranscriptRef.current = spoken;
 
@@ -776,11 +769,18 @@ function App() {
             <div>
               <p className="text-xs uppercase tracking-[0.28em] text-zinc-500">Falas do script</p>
               <h1 className="mt-1 text-xl font-semibold text-white">Teatro Teleprompter</h1>
+              <p className="text-[10px] text-zinc-500 mt-0.5">
+                {user.username} {isAdmin && <span className="text-amber-400">(admin)</span>}
+              </p>
             </div>
-            {/* Botão para adicionar nova fala */}
-            <button onClick={addLine} className="rounded-full border border-zinc-700 px-4 py-2 text-sm text-zinc-100 transition hover:border-emerald-400 hover:text-emerald-300">
-              + Nova fala
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={logout} className="rounded-full border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-red-400 hover:text-red-300">
+                Sair
+              </button>
+              <button onClick={addLine} className="rounded-full border border-zinc-700 px-4 py-2 text-sm text-zinc-100 transition hover:border-emerald-400 hover:text-emerald-300">
+                + Nova fala
+              </button>
+            </div>
           </header>
 
           <div className="space-y-3 p-4">
@@ -800,31 +800,32 @@ function App() {
               <input className="mt-2 w-full accent-emerald-400" type="range" min="40" max="95" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
             </div>
 
-            {/* Painel público de parar áudio: STOP (local) e KILL (todos os clientes) */}
+            {/* Painel de controle de áudio: mute, stop, kill */}
             <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4">
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs uppercase tracking-[0.2em] text-red-400">Parar áudio</p>
+                <p className="text-xs uppercase tracking-[0.2em] text-red-400">Controle de áudio</p>
                 <button onClick={() => { setSoundEnabled((v) => !v); if (soundEnabled) stopAllAudio(); }} className={`rounded-full px-3 py-1 text-xs font-bold transition ${soundEnabled ? "bg-zinc-700 text-zinc-300 hover:bg-zinc-600" : "bg-red-500 text-white hover:bg-red-400"}`}>
                   {soundEnabled ? "Som ligado" : "Som mudo"}
                 </button>
               </div>
+
+              {/* Botão MUTE do admin: silencia tudo em todos os sites */}
+              {isAdmin && (
+                <button onClick={toggleMute} className={`w-full mb-2 rounded-full px-4 py-3 text-sm font-bold transition active:scale-95 ${muted ? "bg-red-500 text-white shadow-lg shadow-red-500/30 animate-pulse" : "bg-zinc-700 text-zinc-200 hover:bg-zinc-600"}`}>
+                  {muted ? "🔇 MUTE ATIVO - clique para reativar" : "🔇 MUTE GLOBAL (admin)"}
+                </button>
+              )}
+
               <div className="flex gap-2">
                 <button onClick={stopAllAudio} className="flex-1 rounded-full border border-zinc-600 px-4 py-3 text-sm font-bold text-zinc-200 transition hover:bg-zinc-800 active:scale-95">
-                  STOP {/* Para áudio apenas neste navegador */}
+                  STOP
                 </button>
                 <button onClick={triggerKillSwitch} className="flex-1 rounded-full border border-red-500/40 px-4 py-3 text-sm font-bold text-red-300 transition hover:bg-red-500/20 active:scale-95">
-                  KILL {/* Para áudio em TODOS os clientes conectados via WebSocket */}
+                  KILL
                 </button>
               </div>
               <p className="mt-2 text-[10px] text-zinc-500">WS: {wsStatus} {isTokenBusy ? "| token ocupado" : ""}</p>
             </div>
-
-            {/* Botão de login admin (oculto quando já logado) */}
-            {!isAdmin && (
-              <button onClick={() => setShowAdminLogin(true)} className="w-full rounded-2xl border border-zinc-700 bg-zinc-900/50 p-3 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200">
-                Admin: entrar
-              </button>
-            )}
 
             {/* Painel admin: Push-to-Talk (visível apenas para admin) */}
             {isAdmin && (
@@ -843,26 +844,55 @@ function App() {
               </div>
             )}
 
-            {/* Modal de login administrador */}
-            {showAdminLogin && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => setShowAdminLogin(false)}>
-                <div className="rounded-3xl border border-zinc-700 bg-zinc-900 p-6 w-80 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-                  <p className="text-sm font-semibold text-white mb-4">Login Administrador</p>
-                  <input
-                    type="password"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    placeholder="Senha"
-                    className="w-full rounded-2xl border border-zinc-700 bg-black px-4 py-3 text-sm text-white outline-none focus:border-amber-400 mb-3"
-                    onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
-                  />
+            {/* Painel de Predefinições (presets) de áudio/voz */}
+            <div className="rounded-2xl border border-zinc-700/30 bg-zinc-900/40 p-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs uppercase tracking-[0.2em] text-zinc-400">Predefinições</p>
+                <button onClick={() => setShowPresets(!showPresets)} className="text-xs text-emerald-400 hover:underline">
+                  {showPresets ? "fechar" : `${presets.length} salvas`}
+                </button>
+              </div>
+              {showPresets && (
+                <div className="space-y-2">
+                  {/* Salvar preset atual */}
                   <div className="flex gap-2">
-                    <button onClick={() => setShowAdminLogin(false)} className="flex-1 rounded-full border border-zinc-700 px-4 py-2 text-xs text-zinc-400 hover:border-zinc-500">Cancelar</button>
-                    <button onClick={handleAdminLogin} className="flex-1 rounded-full bg-amber-400 px-4 py-2 text-xs font-bold text-black hover:bg-amber-300">Entrar</button>
+                    <input
+                      type="text"
+                      value={presetName}
+                      onChange={(e) => setPresetName(e.target.value)}
+                      placeholder="Nome da predefinição"
+                      className="flex-1 rounded-xl border border-zinc-700 bg-black px-3 py-2 text-xs text-white outline-none focus:border-emerald-400"
+                      onKeyDown={(e) => e.key === "Enter" && saveCurrentAsPreset()}
+                    />
+                    <button onClick={saveCurrentAsPreset} disabled={!presetName.trim()} className="rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-black hover:bg-emerald-400 disabled:opacity-40">
+                      Salvar
+                    </button>
+                  </div>
+                  {/* Lista de presets */}
+                  <div className="max-h-32 space-y-1 overflow-y-auto">
+                    {presets.length === 0 && (
+                      <p className="text-[10px] text-zinc-500">Nenhuma predefinição salva.</p>
+                    )}
+                    {presets.map((preset) => (
+                      <div key={preset.id} className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/50 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs text-zinc-200">{preset.name}</p>
+                          <p className="truncate text-[10px] text-zinc-500">{preset.effectName}</p>
+                        </div>
+                        <div className="flex gap-1 ml-2">
+                          <button onClick={() => loadPreset(preset)} className="rounded-lg border border-zinc-700 px-2 py-1 text-[10px] text-zinc-300 hover:border-emerald-400 hover:text-emerald-300">
+                            Usar
+                          </button>
+                          <button onClick={() => removePreset(preset.id)} className="rounded-lg border border-red-500/30 px-2 py-1 text-[10px] text-red-300 hover:bg-red-500/10">
+                            X
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Lista de falas cadastradas */}
             <div className="max-h-[calc(100vh-260px)] space-y-2 overflow-y-auto pr-1">

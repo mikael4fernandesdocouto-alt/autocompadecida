@@ -24,7 +24,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const cooldownRef = useRef<Record<string, number>>({});
-  const { isListening, error: speechError, start: startSpeech, stop: stopSpeech, setError } = useSpeechRecognition();
+  const transcriptRef = useRef(transcript);
+  useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
 
   const selectedLine = useMemo(
     () => lines.find(l => l.id === selectedLineId) ?? lines[0],
@@ -47,6 +48,47 @@ export default function App() {
     setSelectedLineId(restored[0]?.id ?? "");
     setStatus(`Preset "${preset.name}" carregado.`);
   }
+
+  const checkTranscript = useCallback((spoken: string) => {
+    const candidates = lines
+      .filter(l => l.text.trim())
+      .map(l => ({ line: l, score: similarityPercent(spoken, l.text) }))
+      .sort((a, b) => b.score - a.score);
+
+    const best = candidates[0];
+    if (!best || best.score < threshold) return;
+
+    const lastPlayed = cooldownRef.current[best.line.id] ?? 0;
+    if (Date.now() - lastPlayed < 3500) return;
+
+    cooldownRef.current[best.line.id] = Date.now();
+    setLastMatch(best);
+    setSelectedLineId(best.line.id);
+    setStatus(`Detectei "${best.line.text}" (${best.score}%). Tocando: ${best.line.effectName}.`);
+    playEffect(best.line);
+  }, [lines, threshold]);
+
+  const playEffect = useCallback((line: ScriptLine) => {
+    if (line.audioBlob) {
+      playAudioBlob(line.audioBlob, () => setStatus("Erro ao tocar áudio."))
+        .catch(() => setStatus("Navegador bloqueou áudio."));
+      return;
+    }
+    if (line.effectName.toLowerCase().includes("risada") || line.text.toLowerCase().includes("mudem de ideia")) {
+      playSyntheticLaugh();
+    } else {
+      playFallbackBeep();
+    }
+  }, []);
+
+  const handleResult = useCallback((text: string) => {
+    setTranscript(text);
+    checkTranscript(text);
+  }, [checkTranscript]);
+
+  const { isListening, error: speechError, start: startSpeech, stop: stopSpeech, setError } = useSpeechRecognition({
+    onResult: handleResult,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -117,50 +159,15 @@ export default function App() {
     setStatus(`Arquivo "${file.name}" anexado.`);
   }, [selectedLine, updateSelectedLine]);
 
-  const playEffect = useCallback((line: ScriptLine) => {
-    if (line.audioBlob) {
-      playAudioBlob(line.audioBlob, () => setStatus("Erro ao tocar áudio."))
-        .catch(() => setStatus("Navegador bloqueou áudio."));
-      return;
-    }
-    if (line.effectName.toLowerCase().includes("risada") || line.text.toLowerCase().includes("mudem de ideia")) {
-      playSyntheticLaugh();
-    } else {
-      playFallbackBeep();
-    }
-  }, []);
-
-  const checkTranscript = useCallback((spoken: string) => {
-    const candidates = lines
-      .filter(l => l.text.trim())
-      .map(l => ({ line: l, score: similarityPercent(spoken, l.text) }))
-      .sort((a, b) => b.score - a.score);
-
-    const best = candidates[0];
-    if (!best || best.score < threshold) return;
-
-    const lastPlayed = cooldownRef.current[best.line.id] ?? 0;
-    if (Date.now() - lastPlayed < 3500) return;
-
-    cooldownRef.current[best.line.id] = Date.now();
-    setLastMatch(best);
-    setSelectedLineId(best.line.id);
-    setStatus(`Detectei "${best.line.text}" (${best.score}%). Tocando: ${best.line.effectName}.`);
-    playEffect(best.line);
-  }, [lines, threshold, playEffect]);
-
   const handleToggleMic = useCallback(() => {
     if (isListening) {
       stopSpeech();
       setStatus("Microfone desligado.");
     } else {
-      startSpeech((text) => {
-        setTranscript(text);
-        checkTranscript(text);
-      });
+      startSpeech();
       setStatus("Microfone ligado.");
     }
-  }, [isListening, startSpeech, stopSpeech, checkTranscript]);
+  }, [isListening, startSpeech, stopSpeech]);
 
   const clearAll = useCallback(() => {
     const initial = defaultLines();
@@ -229,7 +236,7 @@ export default function App() {
 
           <StatusPanel
             status={status}
-            error={speechError}
+            error={speechError ?? ""}
             transcript={transcript}
             bestPreview={bestPreview}
             lastMatch={lastMatch}

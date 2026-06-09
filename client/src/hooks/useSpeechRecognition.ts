@@ -28,7 +28,8 @@ export function useSpeechRecognition(
   const hasNetworkErrorRef = useRef(false);
   const retryTimeoutRef = useRef<number | null>(null);
   const retryCountRef = useRef(0);
-  const MAX_RETRIES = 15;
+  const MAX_RETRIES = 8;
+  const networkFailCountRef = useRef(0);
   const isReconnectingRef = useRef(false);
 
   const onResultRef = useRef(onResult);
@@ -66,6 +67,7 @@ export function useSpeechRecognition(
       hasNetworkErrorRef.current = false;
       isReconnectingRef.current = false;
       retryCountRef.current = 0;
+      networkFailCountRef.current = 0;
       setError(null);
       onStatusChangeRef.current?.("listening");
     };
@@ -175,11 +177,21 @@ export function useSpeechRecognition(
       }
 
       if (event.error === "network") {
+        networkFailCountRef.current += 1;
+        // If network fails repeatedly, the Google speech server is unreachable
+        // (blocked by firewall/ISP, or bad connection). Stop after MAX_RETRIES.
+        if (networkFailCountRef.current >= 3) {
+          setError("Sem conexão com o servidor de voz do Google. Use Chrome/Edge com HTTPS e verifique sua internet. Se o problema persistir, seu acesso aos servidores do Google pode estar bloqueado.");
+          onErrorRef.current?.("Servidor de voz inalcançável");
+          onStatusChangeRef.current?.("error");
+          isListeningRef.current = false;
+          setIsListening(false);
+          return;
+        }
         retryCountRef.current += 1;
         if (retryCountRef.current <= MAX_RETRIES) {
-          // Exponential backoff: 2s, 4s, 8s... up to 30s
-          const delay = Math.min(2000 * Math.pow(2, retryCountRef.current - 1), 30000);
-          setError(`Rede instável. Reconectando em ${Math.round(delay / 1000)}s... (${retryCountRef.current}/${MAX_RETRIES})`);
+          const delay = Math.min(2000 * Math.pow(2, retryCountRef.current - 1), 16000);
+          setError(`Rede instável. Tentando novamente em ${Math.round(delay / 1000)}s...`);
           try { recognition.abort(); } catch { /* ignorar */ }
           isListeningRef.current = false;
           setIsListening(false);
@@ -189,8 +201,6 @@ export function useSpeechRecognition(
             hasNetworkErrorRef.current = false;
             isReconnectingRef.current = false;
             if (!isStoppingRef.current) {
-              // Create a fresh recognition instance for network retries
-              try { recognition.abort(); } catch { /* ignorar */ }
               const newRecog = createRecognition();
               if (newRecog) {
                 recognitionRef.current = newRecog;
@@ -200,15 +210,17 @@ export function useSpeechRecognition(
                 onStatusChangeRef.current?.("listening");
                 try { newRecog.start(); } catch { /* ignorar */ }
               } else {
-                setError("Não foi possível reconectar o reconhecimento de voz.");
+                isListeningRef.current = false;
+                setIsListening(false);
+                setError("Não foi possível reconectar o microfone.");
                 onStatusChangeRef.current?.("error");
               }
             }
           }, delay);
         } else {
           hasNetworkErrorRef.current = true;
-          setError("Reconhecimento de voz indisponível após várias tentativas. Verifique sua conexão e recarregue a página.");
-          onErrorRef.current?.("Reconhecimento de voz indisponível");
+          setError("Microfone indisponível: sem resposta do servidor de voz. Tente recarregar a página ou usar outra rede.");
+          onErrorRef.current?.("Servidor de voz indisponível");
           onStatusChangeRef.current?.("error");
           isListeningRef.current = false;
           setIsListening(false);

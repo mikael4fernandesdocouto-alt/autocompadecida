@@ -46,7 +46,10 @@ export function similarityPercent(spoken: string, target: string) {
   if (!spokenNormalized || !targetNormalized) return 0;
   if (spokenNormalized === targetNormalized) return 100;
   const containsScore = spokenNormalized.includes(targetNormalized) || targetNormalized.includes(spokenNormalized) ? 92 : 0;
+  // Se já deu 92, nem calcula o resto
+  if (containsScore === 92) return 92;
   const diceScore = diceSimilarity(spokenNormalized, targetNormalized) * 100;
+  if (diceScore >= 85) return Math.round(diceScore); // early return
   const wordScore = wordOverlap(spokenNormalized, targetNormalized) * 100;
-  return Math.round(Math.max(containsScore, diceScore, wordScore));
+  return Math.round(Math.max(diceScore, wordScore));
 }

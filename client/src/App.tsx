@@ -81,7 +81,10 @@ function App() {
       const visibleText = text.trim();
       if (visibleText) {
         micTranscriptRef.current = visibleText;
-        setTranscript(visibleText);
+        // Só atualiza o state se for resultado final (evita re-render a cada palavra)
+        if (isFinal) {
+          setTranscript(visibleText);
+        }
       }
       if (isFinal) {
         lastTranscriptRef.current = "";

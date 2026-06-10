@@ -105,6 +105,7 @@ function App() {
     // Para áudio baseado em arquivo (HTMLAudioElement)
     if (currentAudioRef.current) {
       currentAudioRef.current.pause();
+      currentAudioRef.current.onended = null; // remove handler pra não conflitar
       currentAudioRef.current = null;
     }
     // Para som sintético (Web Audio API)
@@ -549,27 +550,29 @@ function App() {
     if (!spoken || spoken === lastTranscriptRef.current) return;
     lastTranscriptRef.current = spoken;
 
-    const candidates = lines
-      .filter((line) => line.text.trim())
-      .map((line) => ({
-        line,
-        score: similarityPercent(spoken, line.text),
-        wordScore: wordOverlap(spoken, line.text),
-      }))
-      .sort((a, b) => b.score - a.score || b.wordScore - a.wordScore);
+    // Pré-filtra só falas com texto (não recalcula se lines não mudou)
+    const validLines = lines.filter((line) => line.text.trim());
 
-    const best = candidates[0];
-    if (!best || best.score < threshold) return; // abaixo do limite
+    let bestMatch: { line: ScriptLine; score: number } | null = null;
 
-    // Cooldown de 3.5s para evitar disparos repetidos
-    const lastPlayed = cooldownRef.current[best.line.id] ?? 0;
-    if (Date.now() - lastPlayed < 3500) return;
+    for (const line of validLines) {
+      const score = similarityPercent(spoken, line.text);
+      if (score >= threshold && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { line, score };
+      }
+    }
 
-    cooldownRef.current[best.line.id] = Date.now();
-    setLastMatch(best);
-    setSelectedLineId(best.line.id);
-    setStatus(`Detectei “${best.line.text}” com ${best.score}% de parecido. Tocando: ${best.line.effectName}.`);
-    playEffect(best.line);
+    if (!bestMatch) return; // abaixo do limite
+
+    // Cooldown de 1.5s para evitar disparos repetidos da mesma fala
+    const lastPlayed = cooldownRef.current[bestMatch.line.id] ?? 0;
+    if (Date.now() - lastPlayed < 1500) return;
+
+    cooldownRef.current[bestMatch.line.id] = Date.now();
+    setLastMatch(bestMatch);
+    setSelectedLineId(bestMatch.line.id);
+    setStatus(`Detectei "${bestMatch.line.text}" com ${bestMatch.score}% de parecido. Tocando: ${bestMatch.line.effectName}.`);
+    playEffect(bestMatch.line);
   };
 
   // === Upload e exportação ===

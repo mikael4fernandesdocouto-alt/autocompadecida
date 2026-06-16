@@ -98,27 +98,54 @@ export function useSpeechRecognition(
     recognition.onend = () => {
       console.log("✓ Reconhecimento finalizado");
 
+      if (isStoppingRef.current) return;
+
       if (
         isListeningRef.current &&
         !isStoppingRef.current &&
         !hasNetworkErrorRef.current &&
         !isReconnectingRef.current
       ) {
+        // Incrementa contador de retries silenciosos
+        retryCountRef.current += 1;
+
+        if (retryCountRef.current > MAX_RETRIES) {
+          // Excedeu retries — para tudo e avisa o usuário
+          console.warn("Reconhecimento falhou após várias tentativas, parando...");
+          isListeningRef.current = false;
+          setIsListening(false);
+          setError("Reconhecimento de voz parou de funcionar. Tente ligar o microfone novamente.");
+          onStatusChangeRef.current?.("error");
+          return;
+        }
+
+        const delay = retryCountRef.current === 1 ? 500 : 1000;
         setTimeout(() => {
           if (isListeningRef.current && !isStoppingRef.current) {
             try {
               recognition.start();
+              // Reset contador se conseguiu iniciar
+              retryCountRef.current = 0;
             } catch (err: any) {
               console.warn("Falha ao reiniciar recognition:", err?.message);
               try { recognition.abort(); } catch { /* ignorar */ }
               setTimeout(() => {
                 if (isListeningRef.current && !isStoppingRef.current) {
-                  try { recognition.start(); } catch { /* ignorar */ }
+                  try {
+                    recognition.start();
+                    retryCountRef.current = 0;
+                  } catch {
+                    // Falhou de novo — força parada
+                    isListeningRef.current = false;
+                    setIsListening(false);
+                    setError("Microfone desconectado. Clique para ligar novamente.");
+                    onStatusChangeRef.current?.("error");
+                  }
                 }
               }, 300);
             }
           }
-        }, 500);
+        }, delay);
       }
     };
 

@@ -48,6 +48,10 @@ function App() {
   const [muted, setMuted] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Ref para muted — evita stale closures em callbacks assíncronos
+  const mutedRef = useRef(false);
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
+
   // === Estados de admin e WebSocket ===
   const [isAdminLogin, setIsAdminLogin] = useState(isAdmin);
   const [isPttHolding, setIsPttHolding] = useState(false); // se o PTT está ativo
@@ -275,9 +279,15 @@ function App() {
           case WS_EVENTS.KILL_AUDIO_BROADCAST: // Kill Switch acionado por alguém
             stopAllAudio();
             setStatus("Kill Switch acionado: toda a mídia foi parada.");
+            setMuted(true);
             break;
           case WS_EVENTS.UNAUTHORIZED: // Acesso negado (admin)
             setError(`Acesso negado: ${data.message}`);
+            break;
+          case WS_EVENTS.MUTE_BROADCAST: // Mute global acionado por alguém
+            stopAllAudio();
+            setMuted(true);
+            setStatus("MUTE ATIVADO pelo admin: todo áudio foi silenciado.");
             break;
         }
       };
@@ -423,7 +433,9 @@ function App() {
     } else {
       setMuted(true);
       stopAllAudio();
-      triggerKillSwitch();
+      // Envia MUTE via WS para mutar todos os clientes
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      wsRef.current.send(JSON.stringify({ type: WS_EVENTS.MUTE }));
       setStatus("MUTE ATIVADO: todo áudio foi silenciado em todos os sites.");
     }
   };
@@ -499,7 +511,7 @@ function App() {
 
   // Toca o efeito sonoro de uma fala, parando qualquer áudio anterior primeiro
   const playEffect = async (line: ScriptLine) => {
-    if (!soundEnabled || muted) return;
+    if (!soundEnabled || mutedRef.current) return;
     stopAllAudio(); // Garante que só UM áudio toque por vez
 
     // Unlock audio on mobile — must happen inside user gesture
@@ -560,7 +572,7 @@ function App() {
 
   // Compara o que foi falado com as falas cadastradas e dispara o efeito se bater
   const checkTranscript = (spoken: string) => {
-    if (!soundEnabled || muted) return;
+    if (!soundEnabled || mutedRef.current) return;
     if (!spoken || spoken === lastTranscriptRef.current) return;
     lastTranscriptRef.current = spoken;
 

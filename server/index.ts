@@ -116,6 +116,13 @@ async function startServer() {
           break;
         }
 
+        // Mute: para todo áudio e broadcast para todos ficarem mutados
+        case WS_EVENTS.MUTE: {
+          stopAllMediaAndKillToken();
+          broadcast({ type: WS_EVENTS.MUTE_BROADCAST as typeof WS_EVENTS.MUTE_BROADCAST });
+          break;
+        }
+
         default:
           sendTo(ws, { type: WS_EVENTS.ERROR as typeof WS_EVENTS.ERROR, message: `unknown event: ${msg.type}` });
       }
